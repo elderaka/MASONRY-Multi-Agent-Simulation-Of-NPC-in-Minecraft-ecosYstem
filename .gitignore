@@ -1,0 +1,51 @@
+# Gradle
+.gradle/
+build/
+out/
+classes/
+
+# Eclipse
+*.launch
+.settings/
+.metadata/
+.classpath
+.project
+bin/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+*.iws
+*.ipr
+*.iml
+out/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Mac OS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Minecraft
+run/
+saves/
+screenshots/
+*.log
+*.log.gz
+*.log.*.gz
+
+# Forge
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/resources/data/crafting/recipes/*.json
+!**/src/main/resources/data/loot_tables/**/*.json
+!**/src/main/resources/data/tags/**/*.json
+!**/src/main/resources/data/advancements/**/*.json
