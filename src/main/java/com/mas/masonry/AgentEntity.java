@@ -56,7 +56,8 @@ public class AgentEntity extends PathfinderMob {
         // Target tracking
         private Optional<LivingEntity> targetEntity = Optional.empty();
         private Optional<Vec3> targetLocation = Optional.empty();
-        
+        private Optional<Vec3> clearTargetLocation = Optional.empty();
+
         // Additional memory for state persistence
         private int ticksInCurrentState = 0;
         private int lastStateChangeTime = 0;
@@ -364,8 +365,9 @@ public class AgentEntity extends PathfinderMob {
         
         // Use the seek resource goal's detection instead of simulating it
         // This connects to real game mechanics
-        AgentGoals.SeekResourceGoal.checkForResources(this, perceptionRadius, memory);
-        
+        AgentGoals.checkForDanger(this, perceptionRadius, memory);
+        AgentGoals.checkForAllies(this, perceptionRadius, memory);
+        AgentGoals.checkForResources(this, perceptionRadius, memory);
         // Simulate hunger increasing over time
         if (random.nextFloat() < 0.01f) {
             memory.setHungerLevel(Math.min(100, memory.getHungerLevel() + 1));
