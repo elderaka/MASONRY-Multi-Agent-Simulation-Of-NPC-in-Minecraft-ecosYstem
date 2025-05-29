@@ -1,5 +1,11 @@
 {
+  "item.masonry.task_paper": "Task Paper (%s)",
+  "item.masonry.task_paper.task_type.build": "Build",
+  "item.masonry.task_paper.task_type.harvest": "Harvest",
+  "item.masonry.task_paper.task_type.wander": "Wander",
+  "item.masonry.task_paper.task_type.idle": "Idle",
+  "item.masonry.task_paper.task_selected": "Task Paper set to: %s",
+  "item.masonry.task_paper.task_assigned": "Tasked %s to %s",
   "creativetab.masonry_tab": "Masonry Agents",
-  "item.masonry.agent_spawn_egg": "Agent Spawn Egg",
-  "item.masonry.task_paper": "Task Paper"
+  "item.masonry.agent_spawn_egg": "Agent Spawn Egg"
 }

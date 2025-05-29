@@ -314,10 +314,13 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
      */
     public AgentEntity(EntityType<? extends PathfinderMob> entityType, Level level) {
         super(entityType, level);
-        
+
+        // Initialize Random instance - MOVED THIS UP BEFORE MEMORY IS CREATED
+        this.random = new Random();
+
         // Initialize memory
         this.memory = new AgentMemory();
-        
+
         // Initialize state behaviors map
         this.stateBehaviors = new EnumMap<>(AgentState.class);
         initializeStateBehaviors();
@@ -332,9 +335,6 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
 
         // Initialize default target block type
         this.targetBlockType = Blocks.OAK_LOG;
-
-        // Initialize Random instance
-        this.random = new Random();
     }
 
     /**
@@ -524,7 +524,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         this.goalSelector.addGoal(3, new AgentGoals.HelpAllyGoal(this, 1.0D, 16.0F)); // Helping allies
         this.goalSelector.addGoal(4, new AgentGoals.SeekResourceGoal(this, 1.0D, 16.0F)); // Seeking resources
         // Example: Add a WanderGoal if no other specific action is taken, with a lower priority
-        // this.goalSelector.addGoal(7, new RandomStrollGoal(this, 1.0D));
+        this.goalSelector.addGoal(7, new RandomStrollGoal(this, 1.0D)); // Default wandering
         this.goalSelector.addGoal(8, new LookAtPlayerGoal(this, Player.class, 8.0F)); // Low priority
         
         // Target selectors (these run independently to decide who/what to target)
@@ -554,6 +554,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
      * FSM tick method to handle current state's behavior and transitions
      */
     private void tickAI() {
+        MASONRY.LOGGER.debug("{} in tickAI. Current state: {}", this.getName().getString(), currentState);
         // Execute behavior for current state
         IAgentStateHandler handler = stateBehaviors.get(currentState);
         if (handler != null) {
@@ -581,30 +582,39 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
             case IDLE:
                 if (memory.isDangerNearby() && memory.getFearLevel() > 50) {
                     nextState = AgentState.FLEE;
+                    MASONRY.LOGGER.debug("{} IDLE deciding to FLEE due to danger.", this.getName().getString());
                 } else if (memory.isResourceNearby() && memory.getHungerLevel() > 30) {
                     nextState = AgentState.SEEK_RESOURCE;
-                } else if (this.getTarget() == null) { // Only consider helping if not already targeting something
-                    // Check if any nearby allies are fleeing
-                    List<AgentEntity> nearbyFleeingAllies = this.level().getEntitiesOfClass(AgentEntity.class, 
-                        this.getBoundingBox().inflate(16.0D), // Check in a 16-block radius
-                        ally -> ally != this && ally.isAlive() && ally.getCurrentState() == AgentState.FLEE);
-                    
-                    if (!nearbyFleeingAllies.isEmpty()) {
-                        // If an ally is fleeing, decide to help.
-                        // The HelpAllyGoal or HelpAllyStateHandler would then need to determine how to help.
-                        // For example, it could set memory.setTargetEntity(nearbyFleeingAllies.get(0)); 
-                        // to move towards or defend the first detected fleeing ally.
+                    MASONRY.LOGGER.debug("{} IDLE deciding to SEEK_RESOURCE due to hunger.", this.getName().getString());
+                } else if (this.getTarget() == null) { // Only consider social/construction/wandering if not already targeting something for attack/flee (covered by dangerNearby)
+                    // Check if any nearby allies are fleeing and agent is not too scared
+                    List<AgentEntity> nearbyFleeingAllies = this.level().getEntitiesOfClass(AgentEntity.class,
+                            this.getBoundingBox().inflate(16.0D), // Check in a 16-block radius
+                            ally -> ally != this && ally.isAlive() && ally.getCurrentState() == AgentState.FLEE);
+
+                    if (!nearbyFleeingAllies.isEmpty() && memory.getFearLevel() < 50) {
                         nextState = AgentState.HELP_ALLY;
+                        MASONRY.LOGGER.debug("{} IDLE deciding to HELP_ALLY.", this.getName().getString());
+                    } 
+                    // Else, check if sociable and opportunity to greet (and not already helping)
+                    else if (memory.isAllyNearby() && memory.getSocialMeter() > 30 && random.nextFloat() < 0.05f) { // Increased chance to greet
+                        nextState = AgentState.GREET_AGENT;
+                        MASONRY.LOGGER.debug("{} IDLE deciding to GREET.", this.getName().getString());
                     }
-                } else if (this.constructionOrigin != null && 
-                         !MASONRY.SIMPLE_WALL_BLUEPRINT.isEmpty() &&
-                         this.currentBlueprintIndex < MASONRY.SIMPLE_WALL_BLUEPRINT.size()) {
-                    nextState = AgentState.PLACE_CONSTRUCTION_BLOCK;
-                } else if (memory.isAllyNearby() && memory.getSocialMeter() > 30 && this.getTarget() == null && random.nextFloat() < 0.02f) { // Chance to greet if sociable, ally nearby, and no current target
-                    nextState = AgentState.GREET_AGENT;
-                } else if (random.nextFloat() < 0.01f) { // 1% chance per tick to start wandering
-                    nextState = AgentState.WANDER;
+                    // Else, check if there's a construction task (and not already helping or greeting)
+                    else if (this.constructionOrigin != null &&
+                            !MASONRY.SIMPLE_HUT_BLUEPRINT.isEmpty() &&
+                            this.currentBlueprintIndex < MASONRY.SIMPLE_HUT_BLUEPRINT.size()) {
+                        nextState = AgentState.PLACE_CONSTRUCTION_BLOCK;
+                        MASONRY.LOGGER.debug("{} IDLE deciding to PLACE_CONSTRUCTION_BLOCK.", this.getName().getString());
+                    }
+                    // Else, consider wandering (if not doing any of the above)
+                    else if (random.nextFloat() < 0.75f) { // Higher chance to wander from IDLE
+                        nextState = AgentState.WANDER;
+                        MASONRY.LOGGER.debug("{} IDLE deciding to WANDER.", this.getName().getString());
+                    }
                 }
+                MASONRY.LOGGER.debug("{} IDLE determined nextState: {}", this.getName().getString(), nextState);
                 break;
                 
            case WANDER:
@@ -687,7 +697,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
                }
                break;
 
-           // New states - primarily rely on their handlers for transitions, but can be interrupted by Flee.
+            // New states - primarily rely on their handlers for transitions, but can be interrupted by Flee.
            case GREET_AGENT:
            case CHAT_WITH_AGENT:
            case SHARE_RESOURCE_LOCATION:
@@ -776,13 +786,14 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
      * Updates the entity's goals based on its current state
      */
     private void updateGoalsForState(AgentState state) {
-        // Clear non-essential goals
-        this.goalSelector.removeGoal(new RandomStrollGoal(this, 1.0D));
+        // Clear non-essential goals or task-specific goals from previous states if necessary.
+        // The problematic removeGoal(new RandomStrollGoal(...)) has been removed.
         
         // Add state-specific goals
         switch (state) {
             case WANDER:
-                this.goalSelector.addGoal(1, new RandomStrollGoal(this, 1.0D));
+                // Now relies on the RandomStrollGoal added in registerGoals().
+                // If WANDER state needs a *different* stroll behavior or priority, adjust here.
                 break;
             case ATTACK:
                 // The MeleeAttackGoal is always registered, but we could set a target here if needed

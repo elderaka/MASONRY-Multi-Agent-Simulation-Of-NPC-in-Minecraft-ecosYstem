@@ -24,7 +24,7 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
             agent.setConstructionOrigin(agent.blockPosition());
         }
 
-        if (MASONRY.SIMPLE_WALL_BLUEPRINT.isEmpty()) {
+        if (MASONRY.SIMPLE_HUT_BLUEPRINT.isEmpty()) {
             // MASONRY.LOGGER.warn("{} cannot place construction block: Blueprint is empty. Transitioning to IDLE.", agent.getName().getString());
             agent.setCurrentState(AgentState.IDLE);
             memory.resetTicksInState();
@@ -32,7 +32,7 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
         }
 
         int blueprintIndex = agent.getCurrentBlueprintIndex();
-        if (blueprintIndex >= MASONRY.SIMPLE_WALL_BLUEPRINT.size()) {
+        if (blueprintIndex >= MASONRY.SIMPLE_HUT_BLUEPRINT.size()) {
             // MASONRY.LOGGER.info("{} has completed the blueprint! Transitioning to IDLE.", agent.getName().getString());
             agent.setCurrentState(AgentState.IDLE); // Or a new CELEBRATE state :)
             // agent.setConstructionOrigin(null); // Optionally reset for next construction
@@ -41,7 +41,7 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
             return;
         }
 
-        BlueprintBlock currentBlueprintBlock = MASONRY.SIMPLE_WALL_BLUEPRINT.get(blueprintIndex);
+        BlueprintBlock currentBlueprintBlock = MASONRY.SIMPLE_HUT_BLUEPRINT.get(blueprintIndex);
         BlockPos targetPlacementPos = agent.getConstructionOrigin().offset(currentBlueprintBlock.relativePos);
 
         // Check if block is already there

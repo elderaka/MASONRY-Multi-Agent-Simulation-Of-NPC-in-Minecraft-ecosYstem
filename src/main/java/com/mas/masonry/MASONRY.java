@@ -87,10 +87,59 @@ public class MASONRY
         }
     }
 
-    public static final List<BlueprintBlock> SIMPLE_WALL_BLUEPRINT = List.of(
-        new BlueprintBlock(new BlockPos(0, 0, 0), Blocks.OAK_PLANKS),
-        new BlueprintBlock(new BlockPos(1, 0, 0), Blocks.OAK_PLANKS),
-        new BlueprintBlock(new BlockPos(2, 0, 0), Blocks.OAK_PLANKS)
+    public static final List<BlueprintBlock> SIMPLE_HUT_BLUEPRINT = List.of(
+            // Base/Floor (same as before for the front wall foundation)
+            new BlueprintBlock(new BlockPos(0, 0, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 0, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 0, 0), Blocks.OAK_PLANKS),
+
+            // Front Wall (extending upwards)
+            new BlueprintBlock(new BlockPos(0, 1, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 1, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 1, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 2, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 2, 0), Blocks.AIR), // Space for a door
+            new BlueprintBlock(new BlockPos(2, 2, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 3, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 3, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 3, 0), Blocks.OAK_PLANKS),
+
+            // Side Wall 1
+            new BlueprintBlock(new BlockPos(0, 1, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 2, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 3, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 0, 1), Blocks.OAK_PLANKS), // Ground level
+
+            // Side Wall 2
+            new BlueprintBlock(new BlockPos(2, 1, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 2, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 3, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 0, 1), Blocks.OAK_PLANKS), // Ground level
+
+            // Back Wall
+            new BlueprintBlock(new BlockPos(0, 1, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 1, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 1, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 2, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 2, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 2, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 3, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 3, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 3, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 0, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 0, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 0, 2), Blocks.OAK_PLANKS),
+
+            // Roof (simple flat roof)
+            new BlueprintBlock(new BlockPos(0, 4, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 4, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 4, 0), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 4, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 4, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 4, 1), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(0, 4, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(1, 4, 2), Blocks.OAK_PLANKS),
+            new BlueprintBlock(new BlockPos(2, 4, 2), Blocks.OAK_PLANKS)
     );
     // --- End Blueprint Definitions ---
 
