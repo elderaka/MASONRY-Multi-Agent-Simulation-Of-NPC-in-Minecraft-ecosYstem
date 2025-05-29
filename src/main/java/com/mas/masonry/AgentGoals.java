@@ -1,10 +1,10 @@
 package com.mas.masonry;
 
-import com.mas.masonry.AgentEntity;
+import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
@@ -359,19 +359,19 @@ public class AgentGoals {
                 return false;
             }
 
-            // Find nearby ally that needs help (low health)
-            List<AgentEntity> nearbyAllies = agent.level().getEntitiesOfClass(
-                    AgentEntity.class,
-                    agent.getBoundingBox().inflate(searchRange),
-                    ally -> ally != agent &&
-                            ALLY_PREDICATE.test(agent, ally) &&
-                            ally.getMemory().getHealthPercent() < 50
-            );
+// Find nearby ally that needs help (low health)
+List<AgentEntity> nearbyAllies = agent.level().getEntitiesOfClass(
+AgentEntity.class,
+agent.getBoundingBox().inflate(searchRange),
+ally -> ally != agent &&
+ALLY_PREDICATE.test(agent, ally) &&
+ally.getMemory().getHealthPercent() < 50
+);
 
-            if (!nearbyAllies.isEmpty()) {
-                targetAlly = nearbyAllies.get(0);
-                return true;
-            }
+if (!nearbyAllies.isEmpty()) {
+targetAlly = nearbyAllies.get(0);
+return true;
+}
 
             return false;
         }
