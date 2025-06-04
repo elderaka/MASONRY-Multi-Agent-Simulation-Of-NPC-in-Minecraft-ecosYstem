@@ -12,7 +12,8 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.InteractionHand;
 
 public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
-    private static final double MAX_PLACEMENT_DISTANCE_SQR = 3.5 * 3.5; // Max distance to place a block
+    // Increase maximum placement distance from 3.5 to 5.5 blocks (30.25 squared)
+    private static final double MAX_PLACEMENT_DISTANCE_SQR = 5.5 * 5.5;
 
     @Override
     public void handle(AgentEntity agent) {
@@ -54,17 +55,26 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
         }
         // If it's not air and not the target block, it's obstructed. For now, we can't handle this well.
         if (!existingBlockState.isAir()) {
-            // MASONRY.LOGGER.warn("{} found obstruction {} at {}. Cannot place {}. Transitioning to IDLE.", 
+            // MASONRY.LOGGER.warn("{} found obstruction {} at {}. Cannot place {}. Transitioning to IDLE.",
             //    agent.getName().getString(), existingBlockState.getBlock().getName().getString(), targetPlacementPos, currentBlueprintBlock.blockType.getName().getString());
-            agent.setCurrentState(AgentState.IDLE); // Or a new CANNOT_BUILD state
+
+            // Skip this block instead of giving up on construction entirely
+            agent.incrementCurrentBlueprintIndex();
             memory.resetTicksInState();
             return;
         }
 
-        // Check distance to placement position
-        if (agent.position().distanceToSqr(Vec3.atCenterOf(targetPlacementPos)) > MAX_PLACEMENT_DISTANCE_SQR) {
+        // Calculate distance to placement position
+        double distanceSqr = agent.position().distanceToSqr(Vec3.atCenterOf(targetPlacementPos));
+
+        // Check distance to placement position with increased range
+        if (distanceSqr > MAX_PLACEMENT_DISTANCE_SQR) {
             // MASONRY.LOGGER.info("{} is too far from {}. Moving to target block for placement.", agent.getName().getString(), targetPlacementPos);
-            agent.setTargetPos(Vec3.atCenterOf(targetPlacementPos));
+
+            // Calculate a position near the target that's suitable for placement
+            // This tries to find a spot that's not directly on the target but nearby
+            Vec3 targetPos = getPlacementApproachPosition(agent, targetPlacementPos);
+            agent.setTargetPos(targetPos);
             agent.setCurrentState(AgentState.MOVE_TO_TARGET_BLOCK);
             memory.resetTicksInState();
             return;
@@ -86,6 +96,9 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
             return; // Wait for cooldown, do nothing else this tick regarding placement
         }
 
+        // Turn to face the target block
+        lookAtBlock(agent, targetPlacementPos);
+
         // Attempt to place the block
         // MASONRY.LOGGER.info("{} attempting to place {} at {}.", agent.getName().getString(), currentBlueprintBlock.blockType.getName().getString(), targetPlacementPos);
         // Simulate using the item. This is a simplified way to place a block.
@@ -102,10 +115,59 @@ public class PlaceConstructionBlockStateHandler implements IAgentStateHandler {
             agent.incrementCurrentBlueprintIndex();
             memory.resetTicksSinceLastBlockPlace(); // Reset cooldown after successful placement
         } else {
-            // MASONRY.LOGGER.warn("{} failed to place {} at {}. Transitioning to IDLE.", agent.getName().getString(), currentBlueprintBlock.blockType.getName().getString(), targetPlacementPos);
-            agent.setCurrentState(AgentState.IDLE); // Or retry logic
+            // Attempt to place failed - try the next block instead of giving up
+            agent.incrementCurrentBlueprintIndex();
+            // MASONRY.LOGGER.warn("{} failed to place {} at {}. Trying next block.", agent.getName().getString(), currentBlueprintBlock.blockType.getName().getString(), targetPlacementPos);
         }
         memory.resetTicksInState();
+    }
+
+    /**
+     * Makes the agent look at the target block position
+     */
+    private void lookAtBlock(AgentEntity agent, BlockPos targetPos) {
+        Vec3 targetVec = Vec3.atCenterOf(targetPos);
+        Vec3 agentPos = agent.position().add(0, agent.getEyeHeight(), 0);
+        Vec3 direction = targetVec.subtract(agentPos).normalize();
+
+        // Calculate yaw and pitch from the direction vector
+        double horizontalDistance = Math.sqrt(direction.x * direction.x + direction.z * direction.z);
+        float yaw = (float) (Math.atan2(direction.z, direction.x) * 180.0 / Math.PI) - 90.0F;
+        float pitch = (float) -(Math.atan2(direction.y, horizontalDistance) * 180.0 / Math.PI);
+
+        // Set entity rotation
+        agent.setYRot(yaw);
+        agent.setXRot(pitch);
+        agent.setYHeadRot(yaw);
+    }
+
+    /**
+     * Calculates a good position for the agent to stand for block placement
+     */
+    private Vec3 getPlacementApproachPosition(AgentEntity agent, BlockPos targetPos) {
+        // Get a position that's a few blocks away from the target in the direction of the agent
+        Vec3 targetVec = Vec3.atCenterOf(targetPos);
+        Vec3 agentPos = agent.position();
+
+        // Direction from target to agent (reversed so we approach from agent's side)
+        Vec3 direction = agentPos.subtract(targetVec);
+
+        // If agent is directly above/below the target, use a default horizontal direction
+        if (Math.abs(direction.x) < 0.1 && Math.abs(direction.z) < 0.1) {
+            direction = new Vec3(1, direction.y, 0);
+        }
+
+        // Normalize and scale to a good placement distance (about 3 blocks away)
+        direction = direction.normalize().scale(3.0);
+
+        // Create a position that's at the target position plus the offset
+        Vec3 approachPos = targetVec.add(direction);
+
+        // Ensure Y coordinate is reasonable (not floating or underground)
+        // This is simplified and might need refinement based on terrain
+        approachPos = new Vec3(approachPos.x, targetPos.getY(), approachPos.z);
+
+        return approachPos;
     }
 
     private static boolean inventoryHasItem(net.minecraft.world.SimpleContainer inventory, ItemStack itemStack) {

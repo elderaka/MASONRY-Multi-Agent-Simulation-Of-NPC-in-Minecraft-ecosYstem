@@ -1,5 +1,14 @@
 package com.mas.masonry;
 
+import com.mas.masonry.agent.states.*;
+import com.mas.masonry.agent.states.GoToBedStateHandler;
+import com.mas.masonry.agent.states.LookForHomeStateHandler;
+import com.mas.masonry.agent.states.ReturnHomeStateHandler;
+import com.mas.masonry.agent.systems.*;
+import net.minecraft.ChatFormatting;
+import net.minecraft.nbt.Tag;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.PathfinderMob;
@@ -27,6 +36,7 @@ import net.minecraftforge.items.IItemHandler;
 import net.minecraftforge.common.capabilities.Capability;
 import net.minecraftforge.common.capabilities.ForgeCapabilities;
 import net.minecraftforge.common.util.LazyOptional;
+import net.minecraftforge.items.ItemStackHandler;
 import net.minecraftforge.items.wrapper.InvWrapper;
 import net.minecraft.core.Direction;
 import org.jetbrains.annotations.NotNull;
@@ -39,29 +49,18 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.block.Blocks; // For default target block
 import net.minecraft.world.phys.AABB;
 
-import java.util.Random;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Optional;
-import com.mas.masonry.agent.states.IAgentStateHandler;
-import com.mas.masonry.agent.states.IdleStateHandler;
-import com.mas.masonry.agent.states.WanderStateHandler;
-import com.mas.masonry.agent.states.SeekResourceStateHandler;
-import com.mas.masonry.agent.states.FleeStateHandler;
-import com.mas.masonry.agent.states.AttackStateHandler;
-import com.mas.masonry.agent.states.HelpAllyStateHandler;
-import com.mas.masonry.agent.states.FindTargetBlockStateHandler;
-import com.mas.masonry.agent.states.MoveToTargetBlockStateHandler;
-import com.mas.masonry.agent.states.HarvestBlockStateHandler;
-import com.mas.masonry.agent.states.GreetAgentStateHandler;
-import com.mas.masonry.agent.states.ChatWithAgentStateHandler;
-import com.mas.masonry.agent.states.PlaceConstructionBlockStateHandler;
+import java.util.*;
 
 /**
  * Base entity class for intelligent agents that use Finite State Machine (FSM)
  * for decision-making and behavior control.
  */
 public class AgentEntity extends PathfinderMob implements InventoryCarrier {
+    private int nextChatTicks = 0;
+    // Change these to:
+    private static final int MIN_CHAT_INTERVAL_TICKS = 400;  // 20 seconds
+    private static final int MAX_CHAT_INTERVAL_TICKS = 1200; // 60 seconds
+
     public static final int MIN_TICKS_BETWEEN_PLACEMENT = 20; // 1 second between block placements
     public static final int TICKS_TO_HARVEST_BLOCK = 40;      // 2 seconds to harvest a block (base time)
 
@@ -96,7 +95,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
     private final SimpleContainer inventory = new SimpleContainer(AGENT_CONTAINER_SLOTS);
     private LazyOptional<IItemHandler> inventoryCapability;
     private static final int MAX_TICKS_TO_REACH_BLOCK = 500; // Max ticks to reach block before giving up
-
+    private ResourceRequestSystem resourceRequestSystem;
 
 
     // Fields for block targeting and harvesting
@@ -105,9 +104,21 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
     private int findBlockAttempts = 0; // Counter for attempts to find the block
     private static final int MAX_FIND_BLOCK_ATTEMPTS = 5; // Max attempts before giving up
 
+
+    // Add systems
+    private GossipSystem gossipSystem;
+    private TradingSystem tradingSystem;
+    private HomeLocationSystem homeLocationSystem;
+    private POIManager poiManager;
+    private ScheduleSystem scheduleSystem;
+    private ProfessionSystem professionSystem;
+    private CoordinationSystem coordinationSystem; // Add this line
+    private AdvancedAgentSystem advancedSystem = new AdvancedAgentSystem();
+
     /**
      * Possible states for the Agent's FSM
      */
+
     public enum AgentState {
         IDLE,           // Default state, minimal activity
         WANDER,         // Randomly moving around
@@ -132,7 +143,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         // New states for work & task management
         LOOK_FOR_TASK,
         TRAVEL_TO_TASK_LOCATION,
-        PERFORM_TASK, 
+        PERFORM_TASK,
         RETURN_TO_BASE,
         DEPOSIT_RESOURCES,
         RETRIEVE_ITEM,
@@ -143,9 +154,41 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         SEEK_REST,
         SEEK_HEALING_ITEM,
         REACT_TO_WEATHER,
-        REACT_TO_TIME_OF_DAY
-    }
+        REACT_TO_TIME_OF_DAY,
 
+        // Phase 1: Home and POI states
+        RETURN_HOME,
+        GO_TO_BED,
+        LOOK_FOR_HOME,
+        VISIT_POI,
+
+        GO_TO_WORK,
+        WORK_AT_JOB_SITE,
+        TAKE_WORK_BREAK,
+        GO_TO_MEETING,
+        SOCIALIZE_AT_MEETING,
+        LOOK_FOR_JOB,
+        WAKE_UP_ROUTINE,
+
+        // Phase 2.5: Resource sharing states
+        WAIT_FOR_RESOURCE_DELIVERY,
+        CONSIDER_RESOURCE_REQUEST,
+        DELIVER_RESOURCE_TO_AGENT,
+        SHARE_GOSSIP,
+        LISTEN_TO_GOSSIP,
+        PROPOSE_TRADE,
+        CONSIDER_TRADE_OFFER,
+        EXECUTE_TRADE,
+
+        // Phase 4: Advanced coordination states
+        LEAD_PROJECT,
+        PARTICIPATE_IN_PROJECT,
+        TRADING,
+        GATHERING,
+        MINING,
+        FARMING,
+        BUILDING
+    }
     /**
      * Agent's memory class to store information about the environment and internal state
      */
@@ -155,12 +198,80 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         private int healthPercent = 100;    // 0-100 percentage of max health
         private int fearLevel = 0;          // 0-100, higher means more likely to flee
         private int socialMeter = AgentEntity.this.random.nextInt(51) + 25; // 0-100, higher means more sociable. Random 25-75.
-        
+        private int apathyLevel = AgentEntity.this.random.nextInt(31); // 0-30, higher means less likely to help others
+
+
+
+        private int stateTransitionCooldown = 0;
+        private static final int MIN_STATE_DURATION = 100; // 5 seconds minimum per state
+        private AgentState lastState = AgentState.IDLE;
+
+
+
+        // Communication memory
+        private Map<UUID, Integer> recentCommunications = new HashMap<>();
+        private static final int GREETING_COOLDOWN_TICKS = 6000; // 5 minutes (at 20 ticks/sec)
+        private static final int WARNING_COOLDOWN_TICKS = 1200;  // 1 minute
+        private int socialInteractionCooldown = 0;
+        private static final int MIN_SOCIAL_COOLDOWN = 600; // 30 seconds
+        private static final int MAX_SOCIAL_COOLDOWN = 1800; // 90 seconds
+        public boolean isReadyToSocialize() {
+            return socialInteractionCooldown <= 0;
+        }
+        /**
+         * Resets the social interaction cooldown to a random time between MIN and MAX cooldown
+         */
+        public void resetSocialCooldown() {
+            this.socialInteractionCooldown = AgentEntity.this.random.nextInt(
+                    MAX_SOCIAL_COOLDOWN - MIN_SOCIAL_COOLDOWN + 1) + MIN_SOCIAL_COOLDOWN;
+            MASONRY.LOGGER.debug("{} reset social cooldown to {} ticks ({}s)",
+                    AgentEntity.this.getBaseName(),
+                    socialInteractionCooldown,
+                    socialInteractionCooldown/20.0);
+        }
+
+
+
+
+
+
+        // Known danger locations shared by other agents
+        private List<DangerInfo> knownDangers = new ArrayList<>();
+
+
+
         // Entity/environment awareness
         private boolean dangerNearby = false;
         private boolean resourceNearby = false;
         private boolean allyNearby = false;
-        
+
+
+        public boolean canChangeState() {
+            return stateTransitionCooldown <= 0;
+        }
+
+
+        public void resetStateTransitionCooldown() {
+            this.stateTransitionCooldown = MIN_STATE_DURATION;
+        }
+
+        public void updateStateTransitionCooldown() {
+            if (stateTransitionCooldown > 0) {
+                stateTransitionCooldown--;
+            }
+        }
+
+        public void updateTimers() {
+            updateCommunicationTimers();
+            updateStateTransitionCooldown(); // Add this line
+            if (socialInteractionCooldown > 0) {
+                socialInteractionCooldown--;
+            }
+        }
+
+
+
+
         // Target tracking
         private Optional<LivingEntity> targetEntity = Optional.empty();
         private Optional<LivingEntity> attackTarget = Optional.empty();
@@ -187,6 +298,11 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         public void setSocialMeter(int socialMeter) {
             this.socialMeter = Math.max(0, Math.min(100, socialMeter)); // Clamp between 0 and 100
         }
+        public int getApathyLevel() { return apathyLevel; }
+        public void setApathyLevel(int apathyLevel) { this.apathyLevel = Math.max(0, Math.min(100, apathyLevel)); }
+        public void increaseApathyLevel(int amount) { setApathyLevel(apathyLevel + amount); }
+        public void decreaseApathyLevel(int amount) { setApathyLevel(apathyLevel - amount); }
+
         public void increaseSocialMeter(int amount) {
             setSocialMeter(this.socialMeter + amount);
         }
@@ -204,7 +320,15 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         public void setAllyNearby(boolean allyNearby) { this.allyNearby = allyNearby; }
         
         public Optional<LivingEntity> getTargetEntity() { return targetEntity; }
-        public void setTargetEntity(LivingEntity entity) { this.targetEntity = Optional.ofNullable(entity); }
+
+        public void setTargetEntity(LivingEntity entity) {
+            // Prevent setting self as target
+            if (entity == AgentEntity.this) {
+                MASONRY.LOGGER.debug("{} attempted to set itself as target, ignoring", AgentEntity.this.getBaseName());
+                return;
+            }
+            this.targetEntity = Optional.ofNullable(entity);
+        }
         public void clearTargetEntity() { this.targetEntity = Optional.empty(); }
 
         public Optional<LivingEntity> getAttackTarget() { return attackTarget; }
@@ -224,7 +348,27 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
                 this.ticksSinceLastBlockPlace++; 
             }
         }
-        
+
+        public LivingEntity getNearestAlly() {
+            double closestDistSqr = Double.MAX_VALUE;
+            LivingEntity closestAlly = null;
+
+            for (LivingEntity entity : AgentEntity.this.level().getEntitiesOfClass(
+                    LivingEntity.class,
+                    AgentEntity.this.getBoundingBox().inflate(AgentEntity.this.perceptionRadius),
+                    e -> AgentEntity.this.isEntityAlly(e))) {
+
+                double distSqr = AgentEntity.this.distanceToSqr(entity);
+                if (distSqr < closestDistSqr) {
+                    closestDistSqr = distSqr;
+                    closestAlly = entity;
+                }
+            }
+
+            return closestAlly;
+        }
+
+
         public void updateLastStateChangeTime(int gameTime) { this.lastStateChangeTime = gameTime; }
         public int getLastStateChangeTime() { return lastStateChangeTime; }
         
@@ -284,6 +428,118 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
             resourceNearby = false;
             allyNearby = false;
         }
+
+        // Update the AgentMemory class to fix the recordCommunication method
+
+        /**
+         * Records that this agent has communicated with another agent
+         * @param otherAgent The UUID of the agent communicated with
+         * @param communicationType Type of communication (affects cooldown period)
+         */
+        public void recordCommunication(UUID otherAgent, CommunicationType communicationType) {
+            int cooldownTicks = switch (communicationType) {
+                case GREETING -> GREETING_COOLDOWN_TICKS;
+                case WARNING -> WARNING_COOLDOWN_TICKS;
+                case DANGER_WARNING -> WARNING_COOLDOWN_TICKS;
+                case RESOURCE_SHARING, TRADE_PROPOSAL, GOSSIP_SHARING -> 2400; // 2 minutes
+                case GENERAL_CHAT -> 1200; // 1 minute
+            };
+            recentCommunications.put(otherAgent, AgentEntity.this.tickCount + cooldownTicks);
+        }
+
+        /**
+         * Overloaded method for backward compatibility
+         */
+        public void recordCommunication(AgentEntity otherAgent, CommunicationType communicationType) {
+            recordCommunication(otherAgent.getUUID(), communicationType);
+        }
+
+        /**
+         * Simple version for backward compatibility
+         */
+        public void recordCommunication(AgentEntity otherAgent) {
+            recordCommunication(otherAgent.getUUID(), CommunicationType.GENERAL_CHAT);
+        }
+
+        /**
+         * Checks if this agent has recently communicated with another agent
+         * @param entity The entity to check
+         * @return true if communication is on cooldown, false otherwise
+         */
+        public boolean hasRecentlyCommunicated(LivingEntity entity) {
+            if (!(entity instanceof AgentEntity)) return false;
+
+            UUID entityId = entity.getUUID();
+            return recentCommunications.containsKey(entityId) &&
+                    recentCommunications.get(entityId) > 0;
+        }
+
+        /**
+         * Records information about a danger
+         * @param dangerType Type of entity that is dangerous
+         * @param position Position of the danger
+         */
+        public void recordDanger(EntityType<?> dangerType, Vec3 position) {
+            knownDangers.add(new DangerInfo(dangerType, position, WARNING_COOLDOWN_TICKS));
+        }
+
+        /**
+         * Checks if a warning has been given about a specific danger
+         * @param dangerEntity The dangerous entity
+         * @return true if already warned about this danger, false otherwise
+         */
+        public boolean hasWarnedAboutDanger(LivingEntity dangerEntity) {
+            // If there's no danger entity, there's nothing to warn about
+            if (dangerEntity == null) {
+                return false;
+            }
+
+            // Consider a danger warned about if it's within 10 blocks of a known danger of the same type
+            return knownDangers.stream()
+                    .anyMatch(danger ->
+                            danger.entityType == dangerEntity.getType() &&
+                                    danger.position.distanceToSqr(dangerEntity.position()) < 100 && // 10 blocks squared
+                                    danger.cooldownTicks > 0);
+        }
+
+        /**
+         * Updates communication cooldowns
+         */
+        public void updateCommunicationTimers() {
+            // Update recent communications cooldowns
+            recentCommunications.entrySet().removeIf(entry -> {
+                int updatedValue = entry.getValue() - 1;
+                if (updatedValue <= 0) {
+                    return true; // Remove expired communications
+                } else {
+                    entry.setValue(updatedValue);
+                    return false;
+                }
+            });
+
+            // Update danger info cooldowns
+            knownDangers.removeIf(danger -> {
+                danger.cooldownTicks--;
+                return danger.cooldownTicks <= 0;
+            });
+        }
+
+
+
+        /**
+         * Info about a known danger
+         */
+        private static class DangerInfo {
+            private final EntityType<?> entityType;
+            private final Vec3 position;
+            private int cooldownTicks;
+
+            public DangerInfo(EntityType<?> entityType, Vec3 position, int cooldownTicks) {
+                this.entityType = entityType;
+                this.position = position;
+                this.cooldownTicks = cooldownTicks;
+            }
+        }
     }
     
     // Current state in the FSM
@@ -302,40 +558,69 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
     private Vec3 targetPos = null; // For general movement targets, and construction site sub-targets
     
     // Map of behaviors for each state
-    private final EnumMap<AgentState, IAgentStateHandler> stateBehaviors;
+    private EnumMap<AgentState, IAgentStateHandler> stateBehaviors;
     
     // Perception radius 
     private final double perceptionRadius = 16.0;
     private double attackRange = 2.0D;
     private Random random; // Added for random behaviors
-    
+
+    /**
+     * Set the display text above the agent
+     * @param text The text to display
+     */
+    public void setDisplayText(Component text) {
+        this.setCustomName(text);
+    }
+
+
     /**
      * Constructor for the agent entity
      */
     public AgentEntity(EntityType<? extends PathfinderMob> entityType, Level level) {
         super(entityType, level);
-
-        // Initialize Random instance - MOVED THIS UP BEFORE MEMORY IS CREATED
         this.random = new Random();
-
-        // Initialize memory
         this.memory = new AgentMemory();
 
-        // Initialize state behaviors map
+        // Set up inventory capability
+        this.inventoryCapability = LazyOptional.of(() -> new ItemStackHandler(AGENT_CONTAINER_SLOTS) {
+            @Override
+            public boolean isItemValid(int slot, @NotNull ItemStack stack) {
+                return true;
+            }
+        });
+
+        // Initialize the stateBehaviors map before calling initializeStateBehaviors
         this.stateBehaviors = new EnumMap<>(AgentState.class);
         initializeStateBehaviors();
 
-        // Initialize inventory
-        this.inventoryCapability = LazyOptional.of(() -> new InvWrapper(this.inventory));
+        this.gossipSystem = new GossipSystem();
+        this.tradingSystem = new TradingSystem();
+        this.homeLocationSystem = new HomeLocationSystem();
+        this.poiManager = new POIManager();
+        this.scheduleSystem = new ScheduleSystem();
+        this.professionSystem = new ProfessionSystem();
+        this.resourceRequestSystem = new ResourceRequestSystem();
+        this.coordinationSystem = new CoordinationSystem();
 
-        // Assign a random name and make it visible
-        String agentName = MASONRY.getRandomAgentName();
-        this.setCustomName(Component.literal(agentName));
-        this.setCustomNameVisible(true);
 
-        // Initialize default target block type
-        this.targetBlockType = Blocks.OAK_LOG;
+
+
+        // Initialize name and state display
+        this.setCustomName(Component.literal(MASONRY.getRandomAgentName()).withStyle(ChatFormatting.AQUA));
+
+        resetChatTimer();
+        initializeStateBehaviors();
+
     }
+    private void resetChatTimer() {
+        this.nextChatTicks = MIN_CHAT_INTERVAL_TICKS +
+                random.nextInt(MAX_CHAT_INTERVAL_TICKS - MIN_CHAT_INTERVAL_TICKS);
+        this.nextChatTicks = this.random.nextInt(MAX_CHAT_INTERVAL_TICKS - MIN_CHAT_INTERVAL_TICKS + 1) + MIN_CHAT_INTERVAL_TICKS;
+
+    }
+
+
 
     /**
      * Create default attributes for the agent
@@ -414,7 +699,61 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
     public void incrementCurrentBlueprintIndex() { this.currentBlueprintIndex++; }
     // --- End Construction Getters/Setters ---
     // --- End Block Targeting Getters/Setters ---
-    public void setCurrentState(AgentState state) { this.currentState = state; }
+    private int lastStateChangeTime = 0;
+    private static final int MIN_STATE_CHANGE_INTERVAL = 20; // 1 second minimum between state changes
+
+    public void setCurrentState(AgentState newState) {
+        if (newState == this.currentState) {
+            return; // Don't change to same state
+        }
+
+        // Prevent rapid state changes (except for emergency states like FLEE)
+        int currentTime = this.tickCount;
+        if (newState != AgentState.FLEE &&
+                currentTime - lastStateChangeTime < MIN_STATE_CHANGE_INTERVAL) {
+            return; // Too soon to change state
+        }
+
+        AgentState oldState = this.currentState;
+        this.currentState = newState;
+        this.lastStateChangeTime = currentTime;
+
+
+        // Log state change
+        MASONRY.LOGGER.info("{} transitioning from {} to {}", getBaseName(), oldState, newState);
+
+        // Send chat message about state change (with cooldown)
+        sendStateChangeMessage(newState);
+    }
+
+
+
+    private void sendStateChangeMessage(AgentState state) {
+        if (this.level().isClientSide || nextChatTicks >= 0) {
+            return;
+        }
+
+        // Use AgentChatter for state-based messages
+        Component agentNameComponent = Component.literal(getBaseName());
+        Component formattedMessage = AgentChatter.getFormattedChatMessage(state, agentNameComponent);
+
+        if (formattedMessage != null) {
+            sendChatMessage(formattedMessage);
+            resetChatTimer();
+        }
+    }
+
+    public ScheduleSystem getScheduleSystem() {
+        return scheduleSystem;
+    }
+
+    public ProfessionSystem getProfessionSystem() {
+        return professionSystem;
+    }
+    public ResourceRequestSystem getResourceRequestSystem() {
+        return resourceRequestSystem;
+    }
+
 
     @Override
     public SlotAccess getSlot(int slotIndex) {
@@ -444,6 +783,49 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         compound.put("Inventory", listTag);
     }
 
+    /**
+     * Generates a descriptive text for the current state to display below the agent's name
+     * @return A Component with state description text
+     */
+    private Component getStateDescriptionText() {
+        String scheduleDesc = scheduleSystem.getTimeOfDayDescription(level());
+        String activityDesc = scheduleSystem.getCurrentActivity().toString().toLowerCase().replace('_', ' ');
+
+        return switch (currentState) {
+            case GO_TO_WORK -> Component.literal("Going to work (" + scheduleDesc + ")");
+            case WORK_AT_JOB_SITE -> Component.literal("Working (" + activityDesc + ")");
+            case TAKE_WORK_BREAK -> Component.literal("Taking a break (" + scheduleDesc + ")");
+            case GO_TO_MEETING -> Component.literal("Going to meeting (" + scheduleDesc + ")");
+            case LOOK_FOR_JOB -> Component.literal("Looking for work");
+            case GO_TO_BED -> Component.literal("Going to bed (" + scheduleDesc + ")");
+            default -> Component.literal(currentState.toString().toLowerCase().replace('_', ' '));
+        };
+    }
+
+    /**
+     * Updates the agent's display name to include state information
+     */
+    /**
+     * Updates the agent's display name to include state information
+     */
+    private void updateDisplayName() {
+        String baseName = getBaseName();
+        String professionName = "";
+
+        if (professionSystem.hasProfession()) {
+            professionName = " (" + professionSystem.getProfessionDisplayName() + ")";
+        }
+
+        Component stateDesc = getStateDescriptionText();
+        String fullName = baseName + professionName;
+
+        // Don't duplicate profession names - create clean name each time
+        this.setCustomName(Component.literal(fullName));
+        this.setCustomNameVisible(true);
+    }
+
+
+
     // Load inventory with the entity
     @Override
     public void readAdditionalSaveData(CompoundTag compound) {
@@ -459,6 +841,19 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
                 }
             }
         }
+
+        // Load agent state
+        if (compound.contains("AgentState", Tag.TAG_STRING)) {
+            try {
+                this.currentState = AgentState.valueOf(compound.getString("AgentState"));
+            } catch (IllegalArgumentException e) {
+                this.currentState = AgentState.IDLE;
+            }
+        }
+
+        updateDisplayName();
+
+
     }
     @Override
     protected void dropCustomDeathLoot(DamageSource pSource, int pLooting, boolean pRecentlyHit) {
@@ -477,12 +872,13 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
      * Sets up default behaviors for each state
      */
     private void initializeStateBehaviors() {
+        stateBehaviors = new EnumMap<>(AgentState.class);
+
         stateBehaviors.put(AgentState.IDLE, new IdleStateHandler());
         stateBehaviors.put(AgentState.WANDER, new WanderStateHandler());
         stateBehaviors.put(AgentState.SEEK_RESOURCE, new SeekResourceStateHandler());
         stateBehaviors.put(AgentState.FLEE, new FleeStateHandler());
         stateBehaviors.put(AgentState.ATTACK, new AttackStateHandler());
-        stateBehaviors.put(AgentState.HELP_ALLY, new HelpAllyStateHandler());
         stateBehaviors.put(AgentState.FIND_TARGET_BLOCK, new FindTargetBlockStateHandler());
         stateBehaviors.put(AgentState.MOVE_TO_TARGET_BLOCK, new MoveToTargetBlockStateHandler());
         stateBehaviors.put(AgentState.HARVEST_BLOCK, new HarvestBlockStateHandler());
@@ -490,29 +886,26 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
 
         // New states for social interaction & communication
         stateBehaviors.put(AgentState.GREET_AGENT, new GreetAgentStateHandler());
+        stateBehaviors.put(AgentState.WARN_AGENT_OF_DANGER, new WarnAgentOfDangerStateHandler());
+        stateBehaviors.put(AgentState.HELP_ALLY, new HelpAllyStateHandler());
         stateBehaviors.put(AgentState.CHAT_WITH_AGENT, new ChatWithAgentStateHandler());
-        // TODO: Instantiate and put other new state handlers here as they are created
-        // stateBehaviors.put(AgentState.SHARE_RESOURCE_LOCATION, new ShareResourceLocationStateHandler());
-        // stateBehaviors.put(AgentState.REQUEST_ITEM_FROM_AGENT, new RequestItemFromAgentStateHandler());
-        // stateBehaviors.put(AgentState.GIVE_ITEM_TO_AGENT, new GiveItemToAgentStateHandler());
-        // stateBehaviors.put(AgentState.FOLLOW_AGENT, new FollowAgentStateHandler());
-        // stateBehaviors.put(AgentState.WARN_AGENT_OF_DANGER, new WarnAgentOfDangerStateHandler());
 
-        // New states for work & task management
-        // stateBehaviors.put(AgentState.LOOK_FOR_TASK, new LookForTaskStateHandler());
-        // stateBehaviors.put(AgentState.TRAVEL_TO_TASK_LOCATION, new TravelToTaskLocationStateHandler());
-        // stateBehaviors.put(AgentState.PERFORM_TASK, new PerformTaskStateHandler());
-        // stateBehaviors.put(AgentState.RETURN_TO_BASE, new ReturnToBaseStateHandler());
-        // stateBehaviors.put(AgentState.DEPOSIT_RESOURCES, new DepositResourcesStateHandler());
-        // stateBehaviors.put(AgentState.RETRIEVE_ITEM, new RetrieveItemStateHandler());
-        // stateBehaviors.put(AgentState.CRAFT_ITEM, new CraftItemStateHandler());
+        stateBehaviors.put(AgentState.RETURN_HOME, new ReturnHomeStateHandler());
+        stateBehaviors.put(AgentState.LOOK_FOR_HOME, new LookForHomeStateHandler());
+        stateBehaviors.put(AgentState.GO_TO_BED, new GoToBedStateHandler());
 
-        // New states for needs & reactions
-        // stateBehaviors.put(AgentState.SEEK_SHELTER, new SeekShelterStateHandler());
-        // stateBehaviors.put(AgentState.SEEK_REST, new SeekRestStateHandler());
-        // stateBehaviors.put(AgentState.SEEK_HEALING_ITEM, new SeekHealingItemStateHandler());
-        // stateBehaviors.put(AgentState.REACT_TO_WEATHER, new ReactToWeatherStateHandler());
-        // stateBehaviors.put(AgentState.REACT_TO_TIME_OF_DAY, new ReactToTimeOfDayStateHandler());
+        stateBehaviors.put(AgentState.GO_TO_WORK, new GoToWorkStateHandler());
+        stateBehaviors.put(AgentState.WORK_AT_JOB_SITE, new WorkAtJobSiteStateHandler());
+        stateBehaviors.put(AgentState.TAKE_WORK_BREAK, new TakeWorkBreakStateHandler());
+        stateBehaviors.put(AgentState.GO_TO_MEETING, new GoToMeetingStateHandler());
+        stateBehaviors.put(AgentState.LOOK_FOR_JOB, new LookForJobStateHandler());
+        stateBehaviors.put(AgentState.WAIT_FOR_RESOURCE_DELIVERY, new WaitForResourceDeliveryStateHandler());
+        stateBehaviors.put(AgentState.SHARE_GOSSIP, new ShareGossipStateHandler());
+        stateBehaviors.put(AgentState.PROPOSE_TRADE, new ProposeTradeStateHandler());
+        stateBehaviors.put(AgentState.CONSIDER_TRADE_OFFER, new ConsiderTradeOfferStateHandler());
+
+
+
     }
     
     @Override
@@ -545,8 +938,26 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         
         // Execute the finite state machine logic
         tickAI();
-        
-        // Increment the ticks in current state
+
+        if (!level().isClientSide) {
+            // Update Phase 1 systems
+            homeLocationSystem.tick(this);
+            poiManager.tick(level());
+
+            // Update Phase 2 systems
+            professionSystem.tick(this);
+
+            // Update memory and other systems
+            memory.updateTimers();
+            memory.updateCommunicationTimers();
+            resourceRequestSystem.tick(this);
+            gossipSystem.tick(this);
+            tradingSystem.tick(this);
+
+
+        }
+
+
         memory.incrementTicksInState();
     }
     
@@ -554,8 +965,7 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
      * FSM tick method to handle current state's behavior and transitions
      */
     private void tickAI() {
-        MASONRY.LOGGER.debug("{} in tickAI. Current state: {}", this.getName().getString(), currentState);
-        // Execute behavior for current state
+
         IAgentStateHandler handler = stateBehaviors.get(currentState);
         if (handler != null) {
             handler.handle(this);
@@ -571,168 +981,220 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
             transitionToState(nextState);
         }
     }
+
+
     /**
      * Determines what state the agent should transition to based on current perceptions
      */
     private AgentState determineNextState() {
-        // Default is to stay in current state
-        AgentState nextState = currentState;
-        
-        switch (currentState) {
-            case IDLE:
-                if (memory.isDangerNearby() && memory.getFearLevel() > 50) {
-                    nextState = AgentState.FLEE;
-                    MASONRY.LOGGER.debug("{} IDLE deciding to FLEE due to danger.", this.getName().getString());
-                } else if (memory.isResourceNearby() && memory.getHungerLevel() > 30) {
-                    nextState = AgentState.SEEK_RESOURCE;
-                    MASONRY.LOGGER.debug("{} IDLE deciding to SEEK_RESOURCE due to hunger.", this.getName().getString());
-                } else if (this.getTarget() == null) { // Only consider social/construction/wandering if not already targeting something for attack/flee (covered by dangerNearby)
-                    // Check if any nearby allies are fleeing and agent is not too scared
-                    List<AgentEntity> nearbyFleeingAllies = this.level().getEntitiesOfClass(AgentEntity.class,
-                            this.getBoundingBox().inflate(16.0D), // Check in a 16-block radius
-                            ally -> ally != this && ally.isAlive() && ally.getCurrentState() == AgentState.FLEE);
+        // Update current schedule activity
+        ScheduleSystem.AgentActivity currentActivity = scheduleSystem.determineActivity(level(), this);
 
-                    if (!nearbyFleeingAllies.isEmpty() && memory.getFearLevel() < 50) {
-                        nextState = AgentState.HELP_ALLY;
-                        MASONRY.LOGGER.debug("{} IDLE deciding to HELP_ALLY.", this.getName().getString());
-                    } 
-                    // Else, check if sociable and opportunity to greet (and not already helping)
-                    else if (memory.isAllyNearby() && memory.getSocialMeter() > 30 && random.nextFloat() < 0.05f) { // Increased chance to greet
-                        nextState = AgentState.GREET_AGENT;
-                        MASONRY.LOGGER.debug("{} IDLE deciding to GREET.", this.getName().getString());
+        // Check for danger first (highest priority)
+        if (!memory.isDangerNearby()) {
+            List<ResourceRequestSystem.PendingRequest> pendingRequests =
+                    resourceRequestSystem.getPendingRequestsForAgent(getUUID());
+
+            if (!pendingRequests.isEmpty()) {
+                return AgentState.CONSIDER_RESOURCE_REQUEST;
+            }
+
+            // Check for accepted requests to deliver
+            List<ResourceRequestSystem.PendingRequest> acceptedRequests =
+                    resourceRequestSystem.getAcceptedRequestsForAgent(getUUID());
+
+            if (!acceptedRequests.isEmpty()) {
+                return AgentState.GIVE_ITEM_TO_AGENT;
+            }
+        }
+
+        if (!memory.isDangerNearby() && memory.isReadyToSocialize()) {
+
+            // Check for pending trade offers (high priority)
+            if (tradingSystem.getActiveOffers().stream()
+                    .anyMatch(offer -> !offer.offeredBy.equals(getUUID()))) {
+                if (getRandom().nextInt(4) == 0) { // 25% chance to consider trades
+                    return AgentState.CONSIDER_TRADE_OFFER;
+                }
+            }
+
+            // Gossip sharing (medium priority)
+            if (gossipSystem.hasInterestingGossip() && getRandom().nextInt(8) == 0) { // 12.5% chance
+                return AgentState.SHARE_GOSSIP;
+            }
+
+            // Propose trades (lower priority)
+            if (!tradingSystem.hasActiveOffers(getUUID()) && getRandom().nextInt(15) == 0) { // ~6.7% chance
+                return AgentState.PROPOSE_TRADE;
+            }
+        }
+
+
+
+        // Handle schedule-based state transitions
+        switch (currentActivity) {
+            case SLEEP -> {
+                if (homeLocationSystem.hasHome()) {
+                    return AgentState.GO_TO_BED;
+                } else {
+                    return AgentState.LOOK_FOR_HOME;
+                }
+            }
+            case WAKE_UP -> {
+                // Brief wake-up routine
+                return AgentState.WAKE_UP_ROUTINE;
+            }
+            case WORK -> {
+                if (professionSystem.hasProfession()) {
+                    if (poiManager.hasJobSite()) {
+                        // Check if already at work
+                        BlockPos jobSite = poiManager.getJobSite();
+                        if (jobSite != null && blockPosition().closerThan(jobSite, 4.0)) {
+                            return AgentState.WORK_AT_JOB_SITE;
+                        } else {
+                            return AgentState.GO_TO_WORK;
+                        }
+                    } else {
+                        return AgentState.LOOK_FOR_JOB;
                     }
-                    // Else, check if there's a construction task (and not already helping or greeting)
-                    else if (this.constructionOrigin != null &&
-                            !MASONRY.SIMPLE_HUT_BLUEPRINT.isEmpty() &&
-                            this.currentBlueprintIndex < MASONRY.SIMPLE_HUT_BLUEPRINT.size()) {
-                        nextState = AgentState.PLACE_CONSTRUCTION_BLOCK;
-                        MASONRY.LOGGER.debug("{} IDLE deciding to PLACE_CONSTRUCTION_BLOCK.", this.getName().getString());
-                    }
-                    // Else, consider wandering (if not doing any of the above)
-                    else if (random.nextFloat() < 0.75f) { // Higher chance to wander from IDLE
-                        nextState = AgentState.WANDER;
-                        MASONRY.LOGGER.debug("{} IDLE deciding to WANDER.", this.getName().getString());
+                } else {
+                    return AgentState.LOOK_FOR_JOB;
+                }
+            }
+            case SOCIALIZE -> {
+                if (poiManager.hasMeetingPoint()) {
+                    return AgentState.GO_TO_MEETING;
+                } else {
+                    // Look for nearby agents to chat with
+                    if (memory.isAllyNearby() && memory.getSocialMeter() > 50) {
+                        return AgentState.CHAT_WITH_AGENT;
+                    } else {
+                        return AgentState.GO_TO_MEETING; // Will search for meeting point
                     }
                 }
-                MASONRY.LOGGER.debug("{} IDLE determined nextState: {}", this.getName().getString(), nextState);
-                break;
-                
-           case WANDER:
-               if (memory.isDangerNearby() && memory.getFearLevel() > 30) {
-                   nextState = AgentState.FLEE;
-               } else if (memory.isResourceNearby() && memory.getHungerLevel() > 20) {
-                   nextState = AgentState.SEEK_RESOURCE;
-               } else if (this.getTarget() != null) {
-                   nextState = AgentState.ATTACK;
-               } else if (memory.getTicksInCurrentState() > 200 && random.nextFloat() < 0.1f) {
-                   nextState = AgentState.IDLE; // Return to idle after wandering for a while
-               }
-               break;
-               
-           case SEEK_RESOURCE:
-               if (memory.isDangerNearby() && memory.getFearLevel() > 70) {
-                   nextState = AgentState.FLEE;
-               } else if (this.getTarget() != null) {
-                   nextState = AgentState.ATTACK;
-               } else if (!memory.isResourceNearby() || memory.getHungerLevel() < 10) {
-                   nextState = AgentState.IDLE;
-               }
-               break;
-               
-           case FLEE:
-               if (!memory.isDangerNearby() || memory.getFearLevel() < 20) {
-                   nextState = AgentState.IDLE;
-               }
-               break;
-               
-           case ATTACK:
-               if (memory.getHealthPercent() < 30) {
-                   nextState = AgentState.FLEE;
-               } else if (this.getTarget() == null || !this.getTarget().isAlive()) {
-                   nextState = AgentState.IDLE;
-               }
-               break;
-               
-           case HELP_ALLY:
-               if (memory.isDangerNearby() && memory.getHealthPercent() < 20) {
-                   nextState = AgentState.FLEE;
-               } else if (this.getTarget() != null && this.getTarget().isAlive()) { // If it has a target (presumably from helping) and target is alive
-                   nextState = AgentState.ATTACK;
-               } else if (!memory.isAllyNearby() || memory.getTicksInCurrentState() > 200) { // No ally detected or helped for too long (approx 10s)
-                   nextState = AgentState.IDLE;
-               }
-               break;
-
-           case FIND_TARGET_BLOCK:
-               // Transitions from FIND_TARGET_BLOCK are typically handled by its state handler
-               // (e.g., to MOVE_TO_TARGET_BLOCK if found, or IDLE/WANDER if not found after attempts/timeout).
-               // High-priority interrupts like FLEE can still occur based on general conditions.
-               if (memory.isDangerNearby() && memory.getFearLevel() > 60) { // Example flee condition
-                   nextState = AgentState.FLEE;
-               }
-               break;
-
-           case MOVE_TO_TARGET_BLOCK:
-               // Transitions from MOVE_TO_TARGET_BLOCK are typically handled by its state handler
-               // (e.g., to HARVEST_BLOCK or PLACE_CONSTRUCTION_BLOCK on arrival, or FIND_TARGET_BLOCK/IDLE on failure/timeout).
-               if (memory.isDangerNearby() && memory.getFearLevel() > 60) { // Example flee condition
-                   nextState = AgentState.FLEE;
-               }
-               break;
-
-           case HARVEST_BLOCK:
-               // Transitions from HARVEST_BLOCK are typically handled by its state handler
-               // (e.g., to IDLE, FIND_TARGET_BLOCK for more, or a storage-related state when full).
-               if (memory.isDangerNearby() && memory.getFearLevel() > 60) { // Example flee condition
-                   nextState = AgentState.FLEE;
-               }
-               break;
-
-           case PLACE_CONSTRUCTION_BLOCK:
-               // Transitions from PLACE_CONSTRUCTION_BLOCK are primarily handled by its state handler.
-               // It might transition to IDLE, MOVE_TO_TARGET_BLOCK (for next spot), or FIND_TARGET_BLOCK (for materials).
-               // A high-priority interrupt for danger:
-               if (memory.isDangerNearby() && memory.getFearLevel() > 80) { // High threshold to interrupt construction
-                   nextState = AgentState.FLEE;
-               }
-               break;
-
-            // New states - primarily rely on their handlers for transitions, but can be interrupted by Flee.
-           case GREET_AGENT:
-           case CHAT_WITH_AGENT:
-           case SHARE_RESOURCE_LOCATION:
-           case REQUEST_ITEM_FROM_AGENT:
-           case GIVE_ITEM_TO_AGENT:
-           case FOLLOW_AGENT:
-           case WARN_AGENT_OF_DANGER:
-           case LOOK_FOR_TASK:
-           case TRAVEL_TO_TASK_LOCATION:
-           case PERFORM_TASK:
-           case RETURN_TO_BASE:
-           case DEPOSIT_RESOURCES:
-           case RETRIEVE_ITEM:
-           case CRAFT_ITEM:
-           case SEEK_SHELTER:
-           case SEEK_REST:
-           case SEEK_HEALING_ITEM:
-           case REACT_TO_WEATHER:
-           case REACT_TO_TIME_OF_DAY:
-               if (memory.isDangerNearby() && memory.getFearLevel() > 70) { // Generic flee condition for new states
-                   nextState = AgentState.FLEE;
-               }
-               // Otherwise, these states manage their own lifecycle via their handlers.
-               break;
-
-            default:
-                // If current state is unknown or unhandled in this switch, default to IDLE to prevent getting stuck.
-                // However, all AgentState enum members should ideally be covered.
-                MASONRY.LOGGER.warn("Unhandled state in determineNextState switch: {}. Defaulting to IDLE.", currentState);
-                nextState = AgentState.IDLE;
-                break;
+            }
+            case BREAK -> {
+                return AgentState.TAKE_WORK_BREAK;
+            }
+            case PANIC -> {
+                return AgentState.FLEE;
+            }
         }
-        
-        return nextState;
+
+        // Phase 1: Check if should return home (if not handled by schedule)
+        if (homeLocationSystem.shouldReturnHome(this)) {
+            return AgentState.RETURN_HOME;
+        }
+
+        // Check for allies that need help (lower priority than schedule)
+        if (memory.getApathyLevel() < 20 && memory.getSocialMeter() > 40) {
+            LivingEntity allyNeedingHelp = findNearestAllyNeedingHelp();
+            if (allyNeedingHelp != null) {
+                memory.setTargetEntity(allyNeedingHelp);
+                return AgentState.HELP_ALLY;
+            }
+        }
+
+        // Social interactions if ready and not in scheduled activity
+        if (memory.isReadyToSocialize() && memory.getSocialMeter() > 50) {
+            LivingEntity nearbyAgent = memory.getNearestAlly();
+            if (nearbyAgent instanceof AgentEntity) {
+                if (!memory.hasRecentlyCommunicated(nearbyAgent)) {
+                    memory.setTargetEntity(nearbyAgent);
+                    return AgentState.GREET_AGENT;
+                }
+            }
+        }
+
+        // Default behaviors
+        if (memory.isResourceNearby()) {
+            return AgentState.SEEK_RESOURCE;
+        }
+
+        // Random wander occasionally
+        if (random.nextInt(300) == 0) {
+            return AgentState.WANDER;
+        }
+
+        return AgentState.IDLE;
     }
+
+    // Add these methods to AgentEntity class
+
+    /**
+     * Gets the current blueprint for construction
+     */
+    public List<BlockPlacement> getCurrentBlueprint() {
+        // This should return the current construction blueprint
+        // For now, return empty list to fix compilation
+        return new ArrayList<>();
+    }
+
+    /**
+     * Communication type enum for gossip system
+     */
+    public enum CommunicationType {
+        GREETING,
+        WARNING,
+        DANGER_WARNING,  // Add this
+        RESOURCE_SHARING,
+        TRADE_PROPOSAL,
+        GOSSIP_SHARING,
+        GENERAL_CHAT
+    }
+
+
+    /**
+     * Block placement data structure for blueprints
+     */
+    public static class BlockPlacement {
+        public final Block blockType;
+        public final BlockPos relativePos;
+
+        public BlockPlacement(Block blockType, BlockPos relativePos) {
+            this.blockType = blockType;
+            this.relativePos = relativePos;
+        }
+    }
+
+    public HomeLocationSystem getHomeLocationSystem() {
+        return homeLocationSystem;
+    }
+
+    public CoordinationSystem getCoordinationSystem() {
+        return coordinationSystem;
+    }
+
+    public POIManager getPoiManager() {
+        return poiManager;
+    }
+
+    public GossipSystem getGossipSystem() {
+        return gossipSystem;
+    }
+
+    public TradingSystem getTradingSystem() {
+        return tradingSystem;
+    }
+    public AdvancedAgentSystem getAdvancedSystem() {
+        return advancedSystem;
+    }
+
+
+
+    public void createResourceGossip(Item item, BlockPos location) {
+        gossipSystem.createResourceGossip(this, item, location);
+    }
+
+    public void createDangerGossip(String danger, BlockPos location) {
+        gossipSystem.createDangerGossip(this, danger, location);
+    }
+
+    public void createReputationGossip(AgentEntity subject, boolean positive, String reason) {
+        gossipSystem.createReputationGossip(this, subject, positive, reason);
+    }
+
+
 
     /**
      * Directly forces the agent into a new state, bypassing normal FSM logic.
@@ -744,42 +1206,222 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
             this.getName().getString(), this.currentState, newState);
         transitionToState(newState);
     }
+    /**
+     * Gets the base name of the agent without any state information
+     */
+    public String getBaseName() {
+        String customName = this.getCustomName() != null ? this.getCustomName().getString() : "Agent";
+
+        // Extract base name by removing profession suffixes
+        if (customName.contains("(")) {
+            return customName.substring(0, customName.indexOf("(")).trim();
+        }
+
+        return customName;
+    }
+
+    /**
+     * Finds the nearest ally that might need help
+     */
+    private LivingEntity findNearestAllyNeedingHelp() {
+        double closestDistSqr = Double.MAX_VALUE;
+        LivingEntity closestAlly = null;
+
+        for (LivingEntity entity : this.level().getEntitiesOfClass(
+                LivingEntity.class,
+                this.getBoundingBox().inflate(this.getAttributeValue(Attributes.FOLLOW_RANGE)),
+                e -> e instanceof AgentEntity && e != this)) {
+
+            // Check if this ally needs help
+            boolean needsHelp = false;
+            if (entity instanceof AgentEntity allyAgent) {
+                needsHelp = allyAgent.getMemory().isDangerNearby() ||
+                        allyAgent.getCurrentState() == AgentState.FLEE;
+            }
+
+            if (!needsHelp) {
+                continue;
+            }
+
+            double distSqr = this.distanceToSqr(entity);
+            if (distSqr < closestDistSqr) {
+                closestDistSqr = distSqr;
+                closestAlly = entity;
+            }
+        }
+
+        return closestAlly;
+    }
+
+
+
+    /**
+     * Sends a random chat message based on the agent's current state
+     */
+    private void sendRandomChatMessage() {
+        // Don't chat if the agent is in certain states that already handle chat
+        if (currentState == AgentState.GREET_AGENT ||
+                currentState == AgentState.CHAT_WITH_AGENT) {
+            return;
+        }
+
+        // Get the agent's clean name for the message
+        String agentName = getBaseName();
+        Component agentNameComponent = Component.literal(agentName);
+
+        // Get a chat message for the current state
+        Component formattedMessage = AgentChatter.getFormattedChatMessage(currentState, agentNameComponent);
+
+        // If we got a message, broadcast it
+        if (formattedMessage != null && this.level().getServer() != null) {
+            this.level().getServer().getPlayerList().broadcastSystemMessage(formattedMessage, false);
+            MASONRY.LOGGER.debug("{} sent a random chat message", agentName);
+        }
+    }
+
+    // Enhanced sendChatMessage method
+    public void sendChatMessage(Component message) {
+        if (level().isClientSide) return;
+
+        // Check chat cooldown
+        if (level().getGameTime() < nextChatTicks) {
+            return;
+        }
+
+        // Set next chat time with some randomization
+        int baseInterval = MIN_CHAT_INTERVAL_TICKS;
+        int variance = MAX_CHAT_INTERVAL_TICKS - MIN_CHAT_INTERVAL_TICKS;
+        nextChatTicks = (int) (level().getGameTime() + baseInterval + random.nextInt(variance));
+
+        // Send to all players in the area
+        level().players().forEach(player -> {
+            if (player.distanceToSqr(this) < 1024) { // 32 block radius
+                player.sendSystemMessage(message);
+            }
+        });
+
+        MASONRY.LOGGER.debug("Agent {} sent chat: {}", getBaseName(), message.getString());
+    }
+
+    // Overloaded method for state-based automatic chatting
+    public void sendChatMessage(String message) {
+        sendChatMessage(Component.literal("<" + getBaseName() + "> " + message));
+    }
+
+    // Method specifically for resource-related communication
+    public void sendResourceMessage(String messageType, Item item, String targetName) {
+        Component message = AgentChatter.getResourceChatMessage(this, messageType, item, targetName);
+        sendChatMessage(message);
+    }
+    @Override
+    public void tick() {
+        super.tick();
+        memory.updateTimers();
+
+        // Only process AI if cooldown allows
+        if (memory.canChangeState() || memory.getTicksInCurrentState() > 20) {
+            // Update perception
+            updatePerceptions();
+
+            // Update systems
+            gossipSystem.tick(this);
+//            scheduleSystem.tick(this);
+            professionSystem.tick(this);
+            tradingSystem.tick(this);
+
+            // Handle current state (only if not in cooldown)
+            if (stateBehaviors.containsKey(currentState)) {
+                stateBehaviors.get(currentState).handle(this);
+            }
+
+            // Increment state ticks
+            memory.incrementTicksInState();
+        }
+
+        // Always update display name and navigation
+        updateDisplayName();
+
+
+
+        // Make sure name is always visible
+        this.setCustomNameVisible(true);
+
+        // Update all timers in memory
+        this.memory.updateTimers();
+
+
+        // Handle random chatting
+        if (!this.level().isClientSide && this.level().getServer() != null) {
+            coordinationSystem.tick(this);
+
+            // Advanced system integration
+            List<AgentEntity> nearbyAgents = this.level().getEntitiesOfClass(
+                    AgentEntity.class, this.getBoundingBox().inflate(64.0));
+
+            advancedSystem.tick(this.level(), nearbyAgents);
+
+
+            if (nextChatTicks > 0) {
+                nextChatTicks--;
+            } else {
+                // Time to chat!
+                sendRandomChatMessage();
+                resetChatTimer();
+            }
+        }
+
+
+    }
+
 
     /**
      * Handles the transition to a new state
      */
     private void transitionToState(AgentState newState) {
-        String oldStateDebug = this.getName().getString() + " transitioning from " + currentState + " to " + newState;
-        // System.out.println(oldStateDebug); // Keep for debugging if needed, or use LOGGER
+        if (currentState == newState) {
+            return; // No transition needed
+        }
+
+        ;
+
+
+
+        if (newState == AgentState.IDLE) {
+            this.getNavigation().stop();
+            this.memory.clearTargetEntity();
+            this.memory.clearTargetLocation();
+        }
+
+        // Certain transitions might need special handling
+        if (currentState == AgentState.GREET_AGENT && newState != AgentState.CHAT_WITH_AGENT) {
+            // If we were greeting but not moving to chatting, clear the target entity
+            this.memory.clearTargetEntity();
+        }
+
+        // Set the new state
+        AgentState previousState = currentState;
+        this.currentState = newState;
+
+        // Update the display name with state information
+        updateDisplayName();
 
         // Broadcast chat message for new state using AgentChatter, but not for common states like IDLE or WANDER
-        if (!this.level().isClientSide && this.level().getServer() != null && 
-            newState != AgentState.IDLE && newState != AgentState.WANDER) {
-            Component agentNameComponent = this.getCustomName() != null ? this.getCustomName() : Component.literal(MASONRY.getRandomAgentName());
+        if (!this.level().isClientSide && this.level().getServer() != null &&
+                newState != AgentState.IDLE && newState != AgentState.WANDER) {
+            Component agentNameComponent = Component.literal(this.getBaseName());
             Component formattedMessage = AgentChatter.getFormattedChatMessage(newState, agentNameComponent);
-            
+
             if (formattedMessage != null) {
                 MinecraftServer server = this.level().getServer();
                 server.getPlayerList().broadcastSystemMessage(formattedMessage, false);
             }
         }
 
-        // Original transition logic continues here
-        System.out.println(oldStateDebug); // You can move this or use a logger if preferred
-        
-        // Update state and reset counters
-        this.currentState = newState;
-        this.memory.resetTicksInState();
-        this.memory.updateLastStateChangeTime((int) level().getGameTime());
-        
-        // Clear any goal-specific targets if needed
-        if (newState == AgentState.IDLE) {
-            this.memory.clearTargetEntity();
-            this.memory.clearTargetLocation();
-        }
-        
-        // Update goals based on new state
+        // Reset state-specific timers and update goals
+        memory.resetTicksInState();
+        memory.updateLastStateChangeTime((int) this.level().getGameTime());
         updateGoalsForState(newState);
+
     }
     
     /**
@@ -851,18 +1493,13 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
     /**
      * Determine if an entity is considered dangerous
      */
-    private boolean isEntityDangerous(LivingEntity entity) {
+    public boolean isEntityDangerous(LivingEntity entity) {
         // Check if entity is hostile mob
-        if (entity instanceof Monster) {
+        if (entity.getType() == EntityType.ZOMBIE ||
+                entity.getType() == EntityType.SKELETON) {
             return true;
         }
 
-        // Check if it's a player with weapons
-        if (entity instanceof Player player) {
-            ItemStack mainHand = player.getMainHandItem();
-            ItemStack offHand = player.getOffhandItem();
-            return mainHand.isDamageableItem() || offHand.isDamageableItem();
-        }
 
         // Check if entity has attacked us recently
         if (entity == this.getLastHurtByMob() &&
@@ -908,4 +1545,9 @@ public class AgentEntity extends PathfinderMob implements InventoryCarrier {
         }
         return wasHurt;
     }
+    /**
+     * Generates a descriptive text for the current state to display below the agent's name
+     * @return A Component with state description text
+     */
+
 }
